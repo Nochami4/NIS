@@ -17,7 +17,6 @@ data/processed/*.csv
 data/processed/*.parquet
 !data/processed/.gitkeep
 
-outputs/figures/*.png
 outputs/figures/*.svg
 outputs/figures/*.pdf
 !outputs/figures/.gitkeep

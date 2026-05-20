@@ -862,6 +862,202 @@ def build_sequence_features(dataset: pd.DataFrame) -> list[str]:
     ]
 
 
+def run_adf_test(series: pd.Series, series_name: str) -> pd.DataFrame:
+    """Выполняет тест Дики — Фуллера для одного временного ряда."""
+
+    from statsmodels.tsa.stattools import adfuller
+
+    clean_series = pd.Series(series, name=series_name).dropna().astype(float)
+    if len(clean_series) < 10:
+        raise ValueError("Для теста Дики — Фуллера недостаточно наблюдений после удаления пропусков.")
+
+    statistic, p_value, used_lag, observations, critical_values, _ = adfuller(clean_series, autolag="AIC")
+    return pd.DataFrame(
+        [
+            {
+                "series": series_name,
+                "observations": int(observations),
+                "used_lag": int(used_lag),
+                "adf_statistic": float(statistic),
+                "p_value": float(p_value),
+                "critical_value_1pct": float(critical_values["1%"]),
+                "critical_value_5pct": float(critical_values["5%"]),
+                "critical_value_10pct": float(critical_values["10%"]),
+                "stationary_at_5pct": bool(p_value < 0.05),
+            }
+        ]
+    )
+
+
+def plot_acf_pacf(series: pd.Series, output_path: Path, lags: int = 60) -> Path:
+    """Строит графики автокорреляции и частичной автокорреляции."""
+
+    import matplotlib.pyplot as plt
+    from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+
+    clean_series = pd.Series(series).dropna().astype(float)
+    if len(clean_series) <= lags + 1:
+        lags = max(1, len(clean_series) // 2 - 1)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    plot_acf(clean_series, lags=lags, ax=axes[0])
+    plot_pacf(clean_series, lags=lags, ax=axes[1], method="ywm")
+    axes[0].set_title("Автокорреляция средней суточной температуры")
+    axes[1].set_title("Частичная автокорреляция средней суточной температуры")
+    for ax in axes:
+        ax.set_xlabel("Лаг, дней")
+        ax.set_ylabel("Коэффициент")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    return output_path
+
+
+def plot_rolling_mean_std(series: pd.Series, output_path: Path, window: int = 30) -> Path:
+    """Строит скользящее среднее и скользящее стандартное отклонение."""
+
+    import matplotlib.pyplot as plt
+
+    clean_series = pd.Series(series).dropna().astype(float)
+    rolling_mean = clean_series.rolling(window=window).mean()
+    rolling_std = clean_series.rolling(window=window).std()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
+    axes[0].plot(clean_series.index, clean_series, label="исходный ряд", alpha=0.35)
+    axes[0].plot(rolling_mean.index, rolling_mean, label=f"скользящее среднее, {window} дней", linewidth=2)
+    axes[0].set_title("Скользящее среднее средней суточной температуры")
+    axes[0].set_ylabel("Температура, °C")
+    axes[0].legend()
+
+    axes[1].plot(rolling_std.index, rolling_std, color="tab:orange", label=f"скользящее стандартное отклонение, {window} дней")
+    axes[1].set_title("Скользящее стандартное отклонение средней суточной температуры")
+    axes[1].set_xlabel("Дата")
+    axes[1].set_ylabel("Температура, °C")
+    axes[1].legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    return output_path
+
+
+def get_ar_lag_specifications() -> list[dict]:
+    """Возвращает набор авторегрессионных спецификаций для сравнения."""
+
+    return [
+        {"model": "AR(1)", "lags": [1]},
+        {"model": "AR(7)", "lags": [7]},
+        {"model": "AR(30)", "lags": [30]},
+        {"model": "AR с короткими лагами", "lags": [1, 2, 3, 7, 14, 30]},
+        {"model": "AR с сезонным лагом", "lags": [1, 2, 3, 7, 14, 30, 365]},
+    ]
+
+
+def fit_autoreg_lags(series: pd.Series | np.ndarray, lags: Iterable[int]):
+    """Обучает AutoReg с явно заданными лагами без сезонных фиктивных признаков."""
+
+    from statsmodels.tsa.ar_model import AutoReg
+
+    clean_series = pd.Series(series).dropna().astype(float)
+    lag_list = sorted({int(lag) for lag in lags})
+    if not lag_list:
+        raise ValueError("не задан ни один лаг")
+
+    max_lag = max(lag_list)
+    if len(clean_series) <= max_lag + 1:
+        raise ValueError(f"недостаточно наблюдений для лага {max_lag}")
+
+    return AutoReg(clean_series.to_numpy(), lags=lag_list, old_names=False, seasonal=False).fit()
+
+
+def forecast_autoreg_lags(
+    history_series: pd.Series | np.ndarray,
+    horizon: int,
+    lags: Iterable[int],
+) -> np.ndarray:
+    """Строит многошаговый прогноз AutoReg на весь горизонт.
+
+    Эта функция оставлена для технических проверок и не используется
+    в основном сравнении моделей.
+    """
+
+    clean_series = pd.Series(history_series).dropna().astype(float)
+    model = fit_autoreg_lags(history_series, lags)
+    forecast = model.predict(start=len(clean_series), end=len(clean_series) + horizon - 1, dynamic=False)
+    return np.asarray(forecast, dtype=float)
+
+
+def forecast_autoreg_walk_forward(
+    history_series: pd.Series | np.ndarray,
+    target_series: pd.Series | np.ndarray,
+    lags: Iterable[int],
+) -> np.ndarray:
+    """Строит последовательный однодневный прогноз AutoReg."""
+
+    history = list(pd.Series(history_series).dropna().astype(float))
+    targets = pd.Series(target_series).astype(float)
+    lag_list = sorted({int(lag) for lag in lags})
+    predictions: list[float] = []
+
+    if not lag_list:
+        return np.full(len(targets), np.nan, dtype=float)
+
+    max_lag = max(lag_list)
+    for actual_value in targets:
+        if len(history) <= max_lag + 1:
+            predictions.append(np.nan)
+        else:
+            try:
+                model = fit_autoreg_lags(pd.Series(history), lag_list)
+                forecast = model.predict(start=len(history), end=len(history), dynamic=False)
+                predictions.append(float(np.asarray(forecast)[0]))
+            except Exception:
+                predictions.append(np.nan)
+
+        if pd.notna(actual_value):
+            history.append(float(actual_value))
+
+    return np.asarray(predictions, dtype=float)
+
+
+def select_autoreg_lag_models(
+    series: pd.Series | np.ndarray,
+    lag_specs: list[dict] | None = None,
+) -> pd.DataFrame:
+    """Сравнивает авторегрессионные спецификации по AIC и BIC."""
+
+    specs = get_ar_lag_specifications() if lag_specs is None else lag_specs
+    rows = []
+
+    for spec in specs:
+        model_name = spec["model"]
+        lag_list = [int(lag) for lag in spec["lags"]]
+        try:
+            result = fit_autoreg_lags(series, lag_list)
+            rows.append(
+                {
+                    "model": model_name,
+                    "lags": ", ".join(str(lag) for lag in lag_list),
+                    "aic": float(result.aic),
+                    "bic": float(result.bic),
+                    "nobs": int(result.nobs),
+                    "status": "ok",
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "model": model_name,
+                    "lags": ", ".join(str(lag) for lag in lag_list),
+                    "aic": np.nan,
+                    "bic": np.nan,
+                    "nobs": int(pd.Series(series).dropna().shape[0]),
+                    "status": str(exc),
+                }
+            )
+
+    return pd.DataFrame(rows, columns=["model", "lags", "aic", "bic", "nobs", "status"])
+
+
 def create_sequence_windows(
     dataset: pd.DataFrame,
     feature_columns: list[str],
