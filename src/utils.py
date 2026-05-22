@@ -828,13 +828,17 @@ def build_sequence_features(dataset: pd.DataFrame) -> list[str]:
 def run_adf_test(series: pd.Series, series_name: str) -> pd.DataFrame:
     """Выполняет тест Дики — Фуллера для одного временного ряда."""
 
+    from typing import Any
     from statsmodels.tsa.stattools import adfuller
 
     clean_series = pd.Series(series, name=series_name).dropna().astype(float)
     if len(clean_series) < 10:
         raise ValueError("Для теста Дики — Фуллера недостаточно наблюдений после удаления пропусков.")
+
+    res_raw: Any = adfuller(clean_series, autolag="AIC")
     
-    statistic, p_value, used_lag, observations, critical_values = adfuller(clean_series, autolag="AIC")
+    statistic, p_value, used_lag, observations, critical_values = res_raw
+    
     return pd.DataFrame(
         [
             {
