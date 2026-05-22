@@ -127,7 +127,7 @@ def get_nearby_station_candidates(
 ) -> pd.DataFrame:
     """Возвращает ближайшие к Волгограду станции Meteostat."""
 
-    point = Point(latitude, longitude, elevation)
+    point = Point(latitude, longitude, int(elevation) if elevation is not None else None)
     station_candidates = stations.nearby(point, limit=limit)
     if station_candidates is None or station_candidates.empty:
         raise RuntimeError("Meteostat не вернул ближайшие станции для выбранных координат.")
@@ -204,7 +204,7 @@ def fetch_meteostat_data(
             errors.append(f"Станция {getattr(row, 'station_id')}: {exc}")
 
     try:
-        point = Point(latitude, longitude, elevation)
+        point = Point(latitude, longitude, int(elevation) if elevation is not None else None)
         hourly_data = hourly(point, start_ts, hourly_end_ts).fetch()
         daily_data = daily(point, start_ts, end_ts).fetch()
 
@@ -426,13 +426,13 @@ def add_calendar_features(dataset: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_target_history_features(dataset: pd.DataFrame) -> pd.DataFrame:
-    """Добавляет лаговые и скользящие признаки по температуре."""
+    """Добавляет лаговые и скользящие признаки по температурным аномалиям."""
 
     enriched = dataset.copy()
-    history = enriched["target_tavg"].shift(1)
+    history = enriched["target_anomaly"].shift(1)
 
     for lag in [1, 2, 3, 7, 14, 30]:
-        enriched[f"lag_{lag}"] = enriched["target_tavg"].shift(lag)
+        enriched[f"lag_{lag}"] = enriched["target_anomaly"].shift(lag)
 
     enriched["rolling_mean_3"] = history.rolling(window=3).mean()
     enriched["rolling_mean_7"] = history.rolling(window=7).mean()
@@ -444,7 +444,7 @@ def add_target_history_features(dataset: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
-    """Аккуратно обрабатывает пропуски без использования информации из будущего."""
+    """Аккуратно обрабатывает пропуски и рассчитывает температурные аномалии."""
 
     cleaned = dataset.copy().sort_values("date").reset_index(drop=True)
 
@@ -453,17 +453,9 @@ def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
             cleaned[column] = cleaned[column].fillna(0.0)
 
     one_sided_fill_columns = [
-        "tmin",
-        "tmax",
-        "temp_range",
-        "prcp_sum",
-        "snow",
-        "pres_mean",
-        "wspd_mean",
-        "wpgt_max",
-        "rhum_mean",
-        "dwpt_mean",
-        "tsun_sum",
+        "tmin", "tmax", "temp_range", "prcp_sum", "snow",
+        "pres_mean", "wspd_mean", "wpgt_max", "rhum_mean",
+        "dwpt_mean", "tsun_sum",
     ]
 
     for column in one_sided_fill_columns:
@@ -483,64 +475,35 @@ def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
             cleaned = cleaned.drop(columns=column)
 
     cleaned = add_calendar_features(cleaned)
+
+    climatic_norm = cleaned.groupby("dayofyear")["target_tavg"].mean().reset_index()
+    climatic_norm.rename(columns={"target_tavg": "climatic_norm"}, inplace=True)
+    
+    cleaned = cleaned.merge(climatic_norm, on="dayofyear", how="left")
+    cleaned["target_anomaly"] = cleaned["target_tavg"] - cleaned["climatic_norm"]
+
     cleaned = add_target_history_features(cleaned)
 
     required_columns = sorted(CORE_REQUIRED_COLUMNS.intersection(cleaned.columns)) + [
-        "month",
-        "dayofyear",
-        "dayofweek",
-        "season",
-        "season_code",
-        "doy_sin",
-        "doy_cos",
-        "lag_1",
-        "lag_2",
-        "lag_3",
-        "lag_7",
-        "lag_14",
-        "lag_30",
-        "rolling_mean_3",
-        "rolling_mean_7",
-        "rolling_mean_14",
-        "rolling_std_7",
-        "rolling_std_14",
+        "month", "dayofyear", "dayofweek", "season", "season_code",
+        "doy_sin", "doy_cos", "climatic_norm", "target_anomaly",
+        "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_30",
+        "rolling_mean_3", "rolling_mean_7", "rolling_mean_14",
+        "rolling_std_7", "rolling_std_14",
     ]
     required_columns = [column for column in required_columns if column in cleaned.columns]
 
     cleaned = cleaned.dropna(subset=required_columns).reset_index(drop=True)
 
     preferred_order = [
-        "date",
-        "target_tavg",
-        "tmin",
-        "tmax",
-        "temp_range",
-        "prcp_sum",
-        "snow",
-        "pres_mean",
-        "wspd_mean",
-        "wpgt_max",
-        "rhum_mean",
-        "dwpt_mean",
-        "tsun_sum",
-        "month",
-        "dayofyear",
-        "dayofweek",
-        "season",
-        "season_code",
-        "doy_sin",
-        "doy_cos",
-        "lag_1",
-        "lag_2",
-        "lag_3",
-        "lag_7",
-        "lag_14",
-        "lag_30",
-        "rolling_mean_3",
-        "rolling_mean_7",
-        "rolling_mean_14",
-        "rolling_std_7",
-        "rolling_std_14",
+        "date", "target_tavg", "climatic_norm", "target_anomaly",
+        "tmin", "tmax", "temp_range", "prcp_sum", "snow",
+        "pres_mean", "wspd_mean", "wpgt_max", "rhum_mean",
+        "dwpt_mean", "tsun_sum", "month", "dayofyear", "dayofweek",
+        "season", "season_code", "doy_sin", "doy_cos",
+        "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_30",
+        "rolling_mean_3", "rolling_mean_7", "rolling_mean_14",
+        "rolling_std_7", "rolling_std_14",
     ]
 
     ordered_columns = [column for column in preferred_order if column in cleaned.columns]
@@ -870,8 +833,8 @@ def run_adf_test(series: pd.Series, series_name: str) -> pd.DataFrame:
     clean_series = pd.Series(series, name=series_name).dropna().astype(float)
     if len(clean_series) < 10:
         raise ValueError("Для теста Дики — Фуллера недостаточно наблюдений после удаления пропусков.")
-
-    statistic, p_value, used_lag, observations, critical_values, _ = adfuller(clean_series, autolag="AIC")
+    
+    statistic, p_value, used_lag, observations, critical_values = adfuller(clean_series, autolag="AIC")
     return pd.DataFrame(
         [
             {
@@ -1064,10 +1027,11 @@ def create_sequence_windows(
     window_size: int = SEQUENCE_WINDOW_DAYS,
 ) -> tuple[np.ndarray, np.ndarray, pd.Series]:
     """Формирует окна временных последовательностей для LSTM/GRU/Conv1D."""
-
     frame = dataset.copy().sort_values("date").reset_index(drop=True)
     values = frame[feature_columns].to_numpy(dtype=float)
-    targets = frame["target_tavg"].to_numpy(dtype=float)
+    
+    # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: предсказываем target_anomaly вместо target_tavg
+    targets = frame["target_anomaly"].to_numpy(dtype=float) 
     dates = pd.to_datetime(frame["date"])
 
     windows: list[np.ndarray] = []
@@ -1235,7 +1199,7 @@ def get_default_runtime_config() -> dict:
     }
 
 
-def evaluate_regression(y_true: pd.Series, y_pred: pd.Series | np.ndarray, model_name: str) -> dict:
+def evaluate_regression(y_true: pd.Series | np.ndarray, y_pred: pd.Series | np.ndarray, model_name: str) -> dict:
     """Вычисляет основные метрики регрессии."""
 
     y_true_array = np.asarray(y_true, dtype=float)
