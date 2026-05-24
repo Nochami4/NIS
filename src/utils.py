@@ -112,10 +112,18 @@ def normalize_meteostat_frame(frame: pd.DataFrame) -> pd.DataFrame:
     """Преобразует индекс Meteostat в обычный столбец даты."""
 
     normalized = frame.copy()
-    normalized.index = _strip_timezone(pd.DatetimeIndex(pd.to_datetime(normalized.index)))
-    normalized = normalized.reset_index().rename(columns={normalized.index.name or "index": "time"})
+
+    normalized.index = _strip_timezone(
+        pd.DatetimeIndex(pd.to_datetime(normalized.index))
+    )
+
+    normalized.index.name = "time"
+
+    normalized = normalized.reset_index()
+
     normalized["time"] = pd.to_datetime(normalized["time"])
     normalized["date"] = normalized["time"].dt.normalize()
+
     return normalized
 
 
@@ -444,7 +452,7 @@ def add_target_history_features(dataset: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
-    """Аккуратно обрабатывает пропуски и рассчитывает температурные аномалии."""
+    """Аккуратно обрабатывает пропуски и подготавливает базовые признаки."""
 
     cleaned = dataset.copy().sort_values("date").reset_index(drop=True)
 
@@ -471,39 +479,33 @@ def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
                 cleaned = cleaned.drop(columns=column)
                 continue
 
-        if column in cleaned.columns and column not in {"date", "season", "target_tavg"} and cleaned[column].isna().all():
+        if column in cleaned.columns and column not in {"date", "season", "target_tavg", "target_anomaly", "climatic_norm"} and cleaned[column].isna().all():
             cleaned = cleaned.drop(columns=column)
 
     cleaned = add_calendar_features(cleaned)
 
-    climatic_norm = cleaned.groupby("dayofyear")["target_tavg"].mean().reset_index()
-    climatic_norm.rename(columns={"target_tavg": "climatic_norm"}, inplace=True)
-    
-    cleaned = cleaned.merge(climatic_norm, on="dayofyear", how="left")
-    cleaned["target_anomaly"] = cleaned["target_tavg"] - cleaned["climatic_norm"]
-
-    cleaned = add_target_history_features(cleaned)
+    cleaned["climatic_norm"] = np.nan
+    cleaned["target_anomaly"] = np.nan
 
     required_columns = sorted(CORE_REQUIRED_COLUMNS.intersection(cleaned.columns)) + [
-        "month", "dayofyear", "dayofweek", "season", "season_code",
-        "doy_sin", "doy_cos", "climatic_norm", "target_anomaly",
-        "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_30",
-        "rolling_mean_3", "rolling_mean_7", "rolling_mean_14",
-        "rolling_std_7", "rolling_std_14",
+        "month",
+        "dayofyear",
+        "dayofweek",
+        "season",
+        "season_code",
+        "doy_sin",
+        "doy_cos",
     ]
     required_columns = [column for column in required_columns if column in cleaned.columns]
 
     cleaned = cleaned.dropna(subset=required_columns).reset_index(drop=True)
 
     preferred_order = [
-        "date", "target_tavg", "climatic_norm", "target_anomaly",
+        "date", "target_tavg",
         "tmin", "tmax", "temp_range", "prcp_sum", "snow",
         "pres_mean", "wspd_mean", "wpgt_max", "rhum_mean",
         "dwpt_mean", "tsun_sum", "month", "dayofyear", "dayofweek",
-        "season", "season_code", "doy_sin", "doy_cos",
-        "lag_1", "lag_2", "lag_3", "lag_7", "lag_14", "lag_30",
-        "rolling_mean_3", "rolling_mean_7", "rolling_mean_14",
-        "rolling_std_7", "rolling_std_14",
+        "season", "season_code", "doy_sin", "doy_cos"
     ]
 
     ordered_columns = [column for column in preferred_order if column in cleaned.columns]
@@ -524,7 +526,22 @@ def build_modeling_dataset(
     combined = combine_hourly_and_daily_features(hourly_daily=hourly_daily, daily_fallback=daily_fallback)
     dataset = apply_missing_value_strategy(combined)
 
-    return dataset, selection, candidates
+    train, validation, test = split_dataset_by_dates(dataset)
+
+    climatic_norm = compute_train_climatic_norm(train)
+
+    train = apply_climatic_norm(train, climatic_norm)
+    validation = apply_climatic_norm(validation, climatic_norm)
+    test = apply_climatic_norm(test, climatic_norm)
+
+    dataset_full = pd.concat(
+        [train, validation, test],
+        ignore_index=True,
+    ).sort_values("date").reset_index(drop=True)
+
+    dataset_full = add_target_history_features(dataset_full)
+
+    return dataset_full, selection, candidates
 
 
 def get_or_build_modeling_dataset(
@@ -652,7 +669,7 @@ def get_interval_summary(frame: pd.DataFrame, label: str) -> dict:
 def get_model_feature_columns(dataset: pd.DataFrame, exclude_columns: Iterable[str] | None = None) -> list[str]:
     """Возвращает список числовых признаков для моделей."""
 
-    exclude = {"date", "season", "target_tavg"}
+    exclude = {"date", "season", "target_tavg", "target_anomaly"}
     if exclude_columns is not None:
         exclude.update(exclude_columns)
 
@@ -749,7 +766,7 @@ def build_train_scenarios(
 
 
 def build_tabular_modeling_frame(dataset: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str]]:
-    """Готовит табличный датасет для baseline, ML и Dense-сети."""
+    """Готовит табличный массив данных для линейных и нелинейных моделей."""
 
     frame = dataset.copy().sort_values("date").reset_index(drop=True)
 
@@ -799,7 +816,7 @@ def build_tabular_modeling_frame(dataset: pd.DataFrame) -> tuple[pd.DataFrame, l
     lagged_weather_columns = [f"{column}_lag1" for column in weather_columns if f"{column}_lag1" in frame.columns]
 
     feature_columns = calendar_columns + history_columns + lagged_weather_columns
-    frame = frame.dropna(subset=feature_columns + ["target_tavg"]).reset_index(drop=True)
+    frame = frame.dropna(subset=feature_columns + ["target_anomaly"]).reset_index(drop=True)
     return frame, feature_columns, weather_columns
 
 
@@ -809,7 +826,7 @@ def build_sequence_features(dataset: pd.DataFrame) -> list[str]:
     return [
         column
         for column in [
-            "target_tavg",
+            "target_anomaly",
             "tmin",
             "tmax",
             "temp_range",
@@ -837,7 +854,7 @@ def run_adf_test(series: pd.Series, series_name: str) -> pd.DataFrame:
 
     res_raw: Any = adfuller(clean_series, autolag="AIC")
     
-    statistic, p_value, used_lag, observations, critical_values = res_raw
+    statistic, p_value, used_lag, observations, critical_values, _ = res_raw
     
     return pd.DataFrame(
         [
@@ -870,8 +887,8 @@ def plot_acf_pacf(series: pd.Series, output_path: Path, lags: int = 60) -> Path:
     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
     plot_acf(clean_series, lags=lags, ax=axes[0])
     plot_pacf(clean_series, lags=lags, ax=axes[1], method="ywm")
-    axes[0].set_title("Автокорреляция средней суточной температуры")
-    axes[1].set_title("Частичная автокорреляция средней суточной температуры")
+    axes[0].set_title("Автокорреляционная функция температурных аномалий")
+    axes[1].set_title("Частичная автокорреляционная функция температурных аномалий")
     for ax in axes:
         ax.set_xlabel("Лаг, дней")
         ax.set_ylabel("Коэффициент")
@@ -893,12 +910,12 @@ def plot_rolling_mean_std(series: pd.Series, output_path: Path, window: int = 30
     fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
     axes[0].plot(clean_series.index, clean_series, label="исходный ряд", alpha=0.35)
     axes[0].plot(rolling_mean.index, rolling_mean, label=f"скользящее среднее, {window} дней", linewidth=2)
-    axes[0].set_title("Скользящее среднее средней суточной температуры")
+    axes[0].set_title("Скользящее среднее температурных аномалий")
     axes[0].set_ylabel("Температура, °C")
     axes[0].legend()
 
     axes[1].plot(rolling_std.index, rolling_std, color="tab:orange", label=f"скользящее стандартное отклонение, {window} дней")
-    axes[1].set_title("Скользящее стандартное отклонение средней суточной температуры")
+    axes[1].set_title("Скользящее стандартное отклонение температурных аномалий")
     axes[1].set_xlabel("Дата")
     axes[1].set_ylabel("Температура, °C")
     axes[1].legend()
@@ -1030,11 +1047,10 @@ def create_sequence_windows(
     feature_columns: list[str],
     window_size: int = SEQUENCE_WINDOW_DAYS,
 ) -> tuple[np.ndarray, np.ndarray, pd.Series]:
-    """Формирует окна временных последовательностей для LSTM/GRU/Conv1D."""
+    """Формирует окна временных последовательностей для GRU-модели."""
     frame = dataset.copy().sort_values("date").reset_index(drop=True)
     values = frame[feature_columns].to_numpy(dtype=float)
     
-    # КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: предсказываем target_anomaly вместо target_tavg
     targets = frame["target_anomaly"].to_numpy(dtype=float) 
     dates = pd.to_datetime(frame["date"])
 
@@ -1227,3 +1243,40 @@ def evaluate_regression(y_true: pd.Series | np.ndarray, y_pred: pd.Series | np.n
         "rmse": float(np.sqrt(mean_squared_error(y_true_array, y_pred_array))),
         "bias": float(np.mean(y_pred_array - y_true_array)),
     }
+
+def compute_train_climatic_norm(
+    train_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Вычисляет климатическую норму только по train-выборке."""
+
+    if "dayofyear" not in train_frame.columns:
+        raise ValueError("В train_frame отсутствует столбец dayofyear.")
+
+    climatic_norm = (
+        train_frame.groupby("dayofyear", as_index=False)["target_tavg"]
+        .mean()
+        .rename(columns={"target_tavg": "climatic_norm"})
+    )
+
+    return climatic_norm
+
+
+def apply_climatic_norm(
+    frame: pd.DataFrame,
+    climatic_norm: pd.DataFrame,
+) -> pd.DataFrame:
+    """Добавляет климатическую норму и температурные аномалии."""
+
+    enriched = frame.copy()
+
+    enriched = enriched.merge(
+        climatic_norm,
+        on="dayofyear",
+        how="left",
+    )
+
+    enriched["target_anomaly"] = (
+        enriched["target_tavg"] - enriched["climatic_norm"]
+    )
+
+    return enriched
