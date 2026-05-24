@@ -10,8 +10,8 @@ from meteostat import Point, config, daily, hourly, stations
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from src.constants import (
-    DEFAULT_START_DATE,
     DEFAULT_MIN_HOURLY_OBSERVATIONS,
+    DEFAULT_START_DATE,
     FIGURES_DIR,
     FIXED_DATA_END_DATE,
     MAX_QUALITY_MIN_YEAR_SHARE,
@@ -21,10 +21,10 @@ from src.constants import (
     NEURAL_PATIENCE,
     OUTPUTS_DIR,
     PROCESSED_DATA_DIR,
+    RANDOM_STATE,
     RAW_DAILY_FILENAME,
     RAW_DATA_DIR,
     RAW_HOURLY_FILENAME,
-    RANDOM_STATE,
     SEASONAL_PERIOD_DAYS,
     SEQUENCE_WINDOW_DAYS,
     TABLES_DIR,
@@ -57,7 +57,13 @@ CORE_REQUIRED_COLUMNS = {
 def ensure_project_directories() -> None:
     """Создаёт рабочие папки проекта, если они ещё не существуют."""
 
-    for path in [RAW_DATA_DIR, PROCESSED_DATA_DIR, OUTPUTS_DIR, FIGURES_DIR, TABLES_DIR]:
+    for path in [
+        RAW_DATA_DIR,
+        PROCESSED_DATA_DIR,
+        OUTPUTS_DIR,
+        FIGURES_DIR,
+        TABLES_DIR,
+    ]:
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -135,12 +141,18 @@ def get_nearby_station_candidates(
 ) -> pd.DataFrame:
     """Возвращает ближайшие к Волгограду станции Meteostat."""
 
-    point = Point(latitude, longitude, int(elevation) if elevation is not None else None)
+    point = Point(
+        latitude, longitude, int(elevation) if elevation is not None else None
+    )
     station_candidates = stations.nearby(point, limit=limit)
     if station_candidates is None or station_candidates.empty:
-        raise RuntimeError("Meteostat не вернул ближайшие станции для выбранных координат.")
+        raise RuntimeError(
+            "Meteostat не вернул ближайшие станции для выбранных координат."
+        )
 
-    station_candidates = station_candidates.reset_index().rename(columns={"id": "station_id"})
+    station_candidates = station_candidates.reset_index().rename(
+        columns={"id": "station_id"}
+    )
     station_candidates["distance_km"] = station_candidates.apply(
         lambda row: haversine_distance_km(
             latitude,
@@ -155,7 +167,9 @@ def get_nearby_station_candidates(
             station_candidates["distance"].astype(float).div(1000).round(2)
         )
 
-    return station_candidates.sort_values(["distance_km", "name"]).reset_index(drop=True)
+    return station_candidates.sort_values(["distance_km", "name"]).reset_index(
+        drop=True
+    )
 
 
 def fetch_meteostat_data(
@@ -205,14 +219,18 @@ def fetch_meteostat_data(
                 "distance_km": float(getattr(row, "distance_km")),
                 "latitude": float(getattr(row, "latitude")),
                 "longitude": float(getattr(row, "longitude")),
-                "elevation": float(getattr(row, "elevation")) if pd.notna(getattr(row, "elevation")) else np.nan,
+                "elevation": float(getattr(row, "elevation"))
+                if pd.notna(getattr(row, "elevation"))
+                else np.nan,
             }
             return selection, candidates, daily_data, hourly_data
         except Exception as exc:  # pragma: no cover - сеть и внешние данные
             errors.append(f"Станция {getattr(row, 'station_id')}: {exc}")
 
     try:
-        point = Point(latitude, longitude, int(elevation) if elevation is not None else None)
+        point = Point(
+            latitude, longitude, int(elevation) if elevation is not None else None
+        )
         hourly_data = hourly(point, start_ts, hourly_end_ts).fetch()
         daily_data = daily(point, start_ts, end_ts).fetch()
 
@@ -235,7 +253,9 @@ def fetch_meteostat_data(
         }
         return selection, candidates, daily_data, hourly_data
     except Exception as exc:  # pragma: no cover - сеть и внешние данные
-        joined_errors = "; ".join(errors) if errors else "Подходящие станции не найдены."
+        joined_errors = (
+            "; ".join(errors) if errors else "Подходящие станции не найдены."
+        )
         raise RuntimeError(
             "Не удалось загрузить данные Meteostat ни по станции, ни по координатам. "
             f"Подробности: {joined_errors}; Point fallback: {exc}"
@@ -264,8 +284,12 @@ def load_raw_snapshots() -> tuple[pd.DataFrame, pd.DataFrame]:
     if not hourly_path.exists() or not daily_path.exists():
         raise FileNotFoundError("Локальные raw-снимки Meteostat не найдены.")
 
-    hourly_frame = pd.read_csv(hourly_path, parse_dates=["time", "date"]).set_index("time")
-    daily_frame = pd.read_csv(daily_path, parse_dates=["time", "date"]).set_index("time")
+    hourly_frame = pd.read_csv(hourly_path, parse_dates=["time", "date"]).set_index(
+        "time"
+    )
+    daily_frame = pd.read_csv(daily_path, parse_dates=["time", "date"]).set_index(
+        "time"
+    )
     return daily_frame, hourly_frame
 
 
@@ -281,8 +305,12 @@ def subset_raw_snapshots(
     end_ts = pd.Timestamp(end).normalize()
     hourly_end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(hours=1)
 
-    daily_subset = daily_frame.loc[(daily_frame.index >= start_ts) & (daily_frame.index <= end_ts)].copy()
-    hourly_subset = hourly_frame.loc[(hourly_frame.index >= start_ts) & (hourly_frame.index <= hourly_end_ts)].copy()
+    daily_subset = daily_frame.loc[
+        (daily_frame.index >= start_ts) & (daily_frame.index <= end_ts)
+    ].copy()
+    hourly_subset = hourly_frame.loc[
+        (hourly_frame.index >= start_ts) & (hourly_frame.index <= hourly_end_ts)
+    ].copy()
     return daily_subset, hourly_subset
 
 
@@ -291,7 +319,13 @@ def aggregate_hourly_to_daily(hourly: pd.DataFrame) -> pd.DataFrame:
 
     hourly_norm = normalize_meteostat_frame(hourly)
 
-    snow_column = "snow" if "snow" in hourly_norm.columns else "snwd" if "snwd" in hourly_norm.columns else None
+    snow_column = (
+        "snow"
+        if "snow" in hourly_norm.columns
+        else "snwd"
+        if "snwd" in hourly_norm.columns
+        else None
+    )
 
     aggregation_plan: dict[str, tuple[str, str]] = {
         "target_tavg": ("temp", "mean"),
@@ -315,10 +349,14 @@ def aggregate_hourly_to_daily(hourly: pd.DataFrame) -> pd.DataFrame:
     }
 
     if "temp" in hourly_norm.columns:
-        named_aggregations["temp_observations"] = pd.NamedAgg(column="temp", aggfunc="count")
+        named_aggregations["temp_observations"] = pd.NamedAgg(
+            column="temp", aggfunc="count"
+        )
 
     if not named_aggregations:
-        raise RuntimeError("В почасовых данных отсутствуют нужные метеорологические столбцы.")
+        raise RuntimeError(
+            "В почасовых данных отсутствуют нужные метеорологические столбцы."
+        )
 
     aggregated = (
         hourly_norm.groupby("date")
@@ -354,7 +392,9 @@ def prepare_daily_fallback(daily: pd.DataFrame) -> pd.DataFrame:
         "tsun": "daily_tsun",
     }
 
-    columns_to_keep = ["date"] + [column for column in rename_map if column in daily_norm.columns]
+    columns_to_keep = ["date"] + [
+        column for column in rename_map if column in daily_norm.columns
+    ]
     fallback = daily_norm[columns_to_keep].rename(columns=rename_map)
     return fallback.sort_values("date").reset_index(drop=True)
 
@@ -366,7 +406,11 @@ def combine_hourly_and_daily_features(
 ) -> pd.DataFrame:
     """Объединяет агрегированные hourly-признаки и fallback из Daily."""
 
-    dataset = hourly_daily.merge(daily_fallback, on="date", how="outer").sort_values("date").reset_index(drop=True)
+    dataset = (
+        hourly_daily.merge(daily_fallback, on="date", how="outer")
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
 
     if "temp_observations" in dataset.columns:
         insufficient_obs = dataset["temp_observations"] < min_hourly_observations
@@ -389,14 +433,18 @@ def combine_hourly_and_daily_features(
 
     for main_column, fallback_column in fallback_pairs.items():
         if main_column in dataset.columns and fallback_column in dataset.columns:
-            dataset[main_column] = dataset[main_column].combine_first(dataset[fallback_column])
+            dataset[main_column] = dataset[main_column].combine_first(
+                dataset[fallback_column]
+            )
         elif main_column not in dataset.columns and fallback_column in dataset.columns:
             dataset[main_column] = dataset[fallback_column]
 
     if {"tmin", "tmax"}.issubset(dataset.columns):
         dataset["temp_range"] = dataset["tmax"] - dataset["tmin"]
 
-    daily_columns = [column for column in dataset.columns if column.startswith("daily_")]
+    daily_columns = [
+        column for column in dataset.columns if column.startswith("daily_")
+    ]
     return dataset.drop(columns=daily_columns, errors="ignore")
 
 
@@ -461,9 +509,17 @@ def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
             cleaned[column] = cleaned[column].fillna(0.0)
 
     one_sided_fill_columns = [
-        "tmin", "tmax", "temp_range", "prcp_sum", "snow",
-        "pres_mean", "wspd_mean", "wpgt_max", "rhum_mean",
-        "dwpt_mean", "tsun_sum",
+        "tmin",
+        "tmax",
+        "temp_range",
+        "prcp_sum",
+        "snow",
+        "pres_mean",
+        "wspd_mean",
+        "wpgt_max",
+        "rhum_mean",
+        "dwpt_mean",
+        "tsun_sum",
     ]
 
     for column in one_sided_fill_columns:
@@ -479,13 +535,15 @@ def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
                 cleaned = cleaned.drop(columns=column)
                 continue
 
-        if column in cleaned.columns and column not in {"date", "season", "target_tavg", "target_anomaly", "climatic_norm"} and cleaned[column].isna().all():
+        if (
+            column in cleaned.columns
+            and column
+            not in {"date", "season", "target_tavg", "target_anomaly", "climatic_norm"}
+            and cleaned[column].isna().all()
+        ):
             cleaned = cleaned.drop(columns=column)
 
     cleaned = add_calendar_features(cleaned)
-
-    cleaned["climatic_norm"] = np.nan
-    cleaned["target_anomaly"] = np.nan
 
     required_columns = sorted(CORE_REQUIRED_COLUMNS.intersection(cleaned.columns)) + [
         "month",
@@ -496,19 +554,38 @@ def apply_missing_value_strategy(dataset: pd.DataFrame) -> pd.DataFrame:
         "doy_sin",
         "doy_cos",
     ]
-    required_columns = [column for column in required_columns if column in cleaned.columns]
+    required_columns = [
+        column for column in required_columns if column in cleaned.columns
+    ]
 
     cleaned = cleaned.dropna(subset=required_columns).reset_index(drop=True)
 
     preferred_order = [
-        "date", "target_tavg",
-        "tmin", "tmax", "temp_range", "prcp_sum", "snow",
-        "pres_mean", "wspd_mean", "wpgt_max", "rhum_mean",
-        "dwpt_mean", "tsun_sum", "month", "dayofyear", "dayofweek",
-        "season", "season_code", "doy_sin", "doy_cos"
+        "date",
+        "target_tavg",
+        "tmin",
+        "tmax",
+        "temp_range",
+        "prcp_sum",
+        "snow",
+        "pres_mean",
+        "wspd_mean",
+        "wpgt_max",
+        "rhum_mean",
+        "dwpt_mean",
+        "tsun_sum",
+        "month",
+        "dayofyear",
+        "dayofweek",
+        "season",
+        "season_code",
+        "doy_sin",
+        "doy_cos",
     ]
 
-    ordered_columns = [column for column in preferred_order if column in cleaned.columns]
+    ordered_columns = [
+        column for column in preferred_order if column in cleaned.columns
+    ]
     return cleaned[ordered_columns]
 
 
@@ -523,23 +600,12 @@ def build_modeling_dataset(
 
     hourly_daily = aggregate_hourly_to_daily(hourly)
     daily_fallback = prepare_daily_fallback(daily)
-    combined = combine_hourly_and_daily_features(hourly_daily=hourly_daily, daily_fallback=daily_fallback)
-    dataset = apply_missing_value_strategy(combined)
+    combined = combine_hourly_and_daily_features(
+        hourly_daily=hourly_daily,
+        daily_fallback=daily_fallback,
+    )
 
-    train, validation, test = split_dataset_by_dates(dataset)
-
-    climatic_norm = compute_train_climatic_norm(train)
-
-    train = apply_climatic_norm(train, climatic_norm)
-    validation = apply_climatic_norm(validation, climatic_norm)
-    test = apply_climatic_norm(test, climatic_norm)
-
-    dataset_full = pd.concat(
-        [train, validation, test],
-        ignore_index=True,
-    ).sort_values("date").reset_index(drop=True)
-
-    dataset_full = add_target_history_features(dataset_full)
+    dataset_full = finalize_modeling_dataset_from_combined(combined)
 
     return dataset_full, selection, candidates
 
@@ -562,8 +628,10 @@ def get_or_build_modeling_dataset(
         )
         hourly_daily = aggregate_hourly_to_daily(hourly_frame)
         daily_fallback = prepare_daily_fallback(daily_frame)
-        combined = combine_hourly_and_daily_features(hourly_daily=hourly_daily, daily_fallback=daily_fallback)
-        dataset = apply_missing_value_strategy(combined)
+        combined = combine_hourly_and_daily_features(
+            hourly_daily=hourly_daily, daily_fallback=daily_fallback
+        )
+        dataset = finalize_modeling_dataset_from_combined(combined)
 
         selection = {
             "source_type": "local_raw_csv",
@@ -599,7 +667,9 @@ def describe_missing_values(dataset: pd.DataFrame) -> pd.DataFrame:
             "missing_share": dataset.isna().mean(),
         }
     )
-    summary = summary[summary["missing_count"] > 0].sort_values(["missing_count", "missing_share"], ascending=False)
+    summary = summary[summary["missing_count"] > 0].sort_values(
+        ["missing_count", "missing_share"], ascending=False
+    )
     return summary
 
 
@@ -611,7 +681,9 @@ def split_train_validation_test(
     """Делит датасет на train, validation и test по времени."""
 
     if len(dataset) <= validation_days + test_days:
-        raise ValueError("Недостаточно наблюдений для выделения validation и test интервалов.")
+        raise ValueError(
+            "Недостаточно наблюдений для выделения validation и test интервалов."
+        )
 
     train = dataset.iloc[: -(validation_days + test_days)].copy()
     validation = dataset.iloc[-(validation_days + test_days) : -test_days].copy()
@@ -645,14 +717,26 @@ def split_dataset_by_dates(
 
     train_end_ts = validation_start_ts - pd.Timedelta(days=1)
 
-    train = frame.loc[(frame["date"] >= train_start_ts) & (frame["date"] <= train_end_ts)].copy()
-    validation = frame.loc[(frame["date"] >= validation_start_ts) & (frame["date"] <= validation_end_ts)].copy()
-    test = frame.loc[(frame["date"] >= test_start_ts) & (frame["date"] <= test_end_ts)].copy()
+    train = frame.loc[
+        (frame["date"] >= train_start_ts) & (frame["date"] <= train_end_ts)
+    ].copy()
+    validation = frame.loc[
+        (frame["date"] >= validation_start_ts) & (frame["date"] <= validation_end_ts)
+    ].copy()
+    test = frame.loc[
+        (frame["date"] >= test_start_ts) & (frame["date"] <= test_end_ts)
+    ].copy()
 
     if train.empty or validation.empty or test.empty:
-        raise ValueError("Фиксированные интервалы train / validation / test не удалось сформировать.")
+        raise ValueError(
+            "Фиксированные интервалы train / validation / test не удалось сформировать."
+        )
 
-    return train.reset_index(drop=True), validation.reset_index(drop=True), test.reset_index(drop=True)
+    return (
+        train.reset_index(drop=True),
+        validation.reset_index(drop=True),
+        test.reset_index(drop=True),
+    )
 
 
 def get_interval_summary(frame: pd.DataFrame, label: str) -> dict:
@@ -666,7 +750,9 @@ def get_interval_summary(frame: pd.DataFrame, label: str) -> dict:
     }
 
 
-def get_model_feature_columns(dataset: pd.DataFrame, exclude_columns: Iterable[str] | None = None) -> list[str]:
+def get_model_feature_columns(
+    dataset: pd.DataFrame, exclude_columns: Iterable[str] | None = None
+) -> list[str]:
     """Возвращает список числовых признаков для моделей."""
 
     exclude = {"date", "season", "target_tavg", "target_anomaly"}
@@ -706,7 +792,8 @@ def get_max_quality_train_start(
     validation_start_ts = pd.Timestamp(validation_start).normalize()
     coverage = get_yearly_coverage(dataset)
     eligible_years = coverage.loc[
-        (coverage["year"] < validation_start_ts.year) & (coverage["share_of_full_year"] >= min_year_share),
+        (coverage["year"] < validation_start_ts.year)
+        & (coverage["share_of_full_year"] >= min_year_share),
         "year",
     ]
 
@@ -725,7 +812,9 @@ def build_train_scenarios(
 
     validation_start_ts = pd.Timestamp(validation_start).normalize()
     dataset_start_ts = pd.Timestamp(dataset["date"].min()).normalize()
-    max_quality_start = get_max_quality_train_start(dataset=dataset, validation_start=validation_start_ts)
+    max_quality_start = get_max_quality_train_start(
+        dataset=dataset, validation_start=validation_start_ts
+    )
 
     scenarios: list[dict] = []
     for years in candidate_lengths_years:
@@ -765,7 +854,9 @@ def build_train_scenarios(
     return deduplicated
 
 
-def build_tabular_modeling_frame(dataset: pd.DataFrame) -> tuple[pd.DataFrame, list[str], list[str]]:
+def build_tabular_modeling_frame(
+    dataset: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Готовит табличный массив данных для линейных и нелинейных моделей."""
 
     frame = dataset.copy().sort_values("date").reset_index(drop=True)
@@ -793,7 +884,14 @@ def build_tabular_modeling_frame(dataset: pd.DataFrame) -> tuple[pd.DataFrame, l
 
     calendar_columns = [
         column
-        for column in ["month", "dayofyear", "dayofweek", "season_code", "doy_sin", "doy_cos"]
+        for column in [
+            "month",
+            "dayofyear",
+            "dayofweek",
+            "season_code",
+            "doy_sin",
+            "doy_cos",
+        ]
         if column in frame.columns
     ]
     history_columns = [
@@ -813,10 +911,16 @@ def build_tabular_modeling_frame(dataset: pd.DataFrame) -> tuple[pd.DataFrame, l
         ]
         if column in frame.columns
     ]
-    lagged_weather_columns = [f"{column}_lag1" for column in weather_columns if f"{column}_lag1" in frame.columns]
+    lagged_weather_columns = [
+        f"{column}_lag1"
+        for column in weather_columns
+        if f"{column}_lag1" in frame.columns
+    ]
 
     feature_columns = calendar_columns + history_columns + lagged_weather_columns
-    frame = frame.dropna(subset=feature_columns + ["target_anomaly"]).reset_index(drop=True)
+    frame = frame.dropna(subset=feature_columns + ["target_anomaly"]).reset_index(
+        drop=True
+    )
     return frame, feature_columns, weather_columns
 
 
@@ -846,16 +950,19 @@ def run_adf_test(series: pd.Series, series_name: str) -> pd.DataFrame:
     """Выполняет тест Дики — Фуллера для одного временного ряда."""
 
     from typing import Any
+
     from statsmodels.tsa.stattools import adfuller
 
     clean_series = pd.Series(series, name=series_name).dropna().astype(float)
     if len(clean_series) < 10:
-        raise ValueError("Для теста Дики — Фуллера недостаточно наблюдений после удаления пропусков.")
+        raise ValueError(
+            "Для теста Дики — Фуллера недостаточно наблюдений после удаления пропусков."
+        )
 
     res_raw: Any = adfuller(clean_series, autolag="AIC")
-    
+
     statistic, p_value, used_lag, observations, critical_values, _ = res_raw
-    
+
     return pd.DataFrame(
         [
             {
@@ -897,7 +1004,9 @@ def plot_acf_pacf(series: pd.Series, output_path: Path, lags: int = 60) -> Path:
     return output_path
 
 
-def plot_rolling_mean_std(series: pd.Series, output_path: Path, window: int = 30) -> Path:
+def plot_rolling_mean_std(
+    series: pd.Series, output_path: Path, window: int = 30
+) -> Path:
     """Строит скользящее среднее и скользящее стандартное отклонение."""
 
     import matplotlib.pyplot as plt
@@ -909,12 +1018,22 @@ def plot_rolling_mean_std(series: pd.Series, output_path: Path, window: int = 30
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2, 1, figsize=(14, 7), sharex=True)
     axes[0].plot(clean_series.index, clean_series, label="исходный ряд", alpha=0.35)
-    axes[0].plot(rolling_mean.index, rolling_mean, label=f"скользящее среднее, {window} дней", linewidth=2)
+    axes[0].plot(
+        rolling_mean.index,
+        rolling_mean,
+        label=f"скользящее среднее, {window} дней",
+        linewidth=2,
+    )
     axes[0].set_title("Скользящее среднее температурных аномалий")
     axes[0].set_ylabel("Температура, °C")
     axes[0].legend()
 
-    axes[1].plot(rolling_std.index, rolling_std, color="tab:orange", label=f"скользящее стандартное отклонение, {window} дней")
+    axes[1].plot(
+        rolling_std.index,
+        rolling_std,
+        color="tab:orange",
+        label=f"скользящее стандартное отклонение, {window} дней",
+    )
     axes[1].set_title("Скользящее стандартное отклонение температурных аномалий")
     axes[1].set_xlabel("Дата")
     axes[1].set_ylabel("Температура, °C")
@@ -950,7 +1069,9 @@ def fit_autoreg_lags(series: pd.Series | np.ndarray, lags: Iterable[int]):
     if len(clean_series) <= max_lag + 1:
         raise ValueError(f"недостаточно наблюдений для лага {max_lag}")
 
-    return AutoReg(clean_series.to_numpy(), lags=lag_list, old_names=False, seasonal=False).fit()
+    return AutoReg(
+        clean_series.to_numpy(), lags=lag_list, old_names=False, seasonal=False
+    ).fit()
 
 
 def forecast_autoreg_lags(
@@ -966,7 +1087,9 @@ def forecast_autoreg_lags(
 
     clean_series = pd.Series(history_series).dropna().astype(float)
     model = fit_autoreg_lags(history_series, lags)
-    forecast = model.predict(start=len(clean_series), end=len(clean_series) + horizon - 1, dynamic=False)
+    forecast = model.predict(
+        start=len(clean_series), end=len(clean_series) + horizon - 1, dynamic=False
+    )
     return np.asarray(forecast, dtype=float)
 
 
@@ -992,7 +1115,9 @@ def forecast_autoreg_walk_forward(
         else:
             try:
                 model = fit_autoreg_lags(pd.Series(history), lag_list)
-                forecast = model.predict(start=len(history), end=len(history), dynamic=False)
+                forecast = model.predict(
+                    start=len(history), end=len(history), dynamic=False
+                )
                 predictions.append(float(np.asarray(forecast)[0]))
             except Exception:
                 predictions.append(np.nan)
@@ -1050,8 +1175,8 @@ def create_sequence_windows(
     """Формирует окна временных последовательностей для GRU-модели."""
     frame = dataset.copy().sort_values("date").reset_index(drop=True)
     values = frame[feature_columns].to_numpy(dtype=float)
-    
-    targets = frame["target_anomaly"].to_numpy(dtype=float) 
+
+    targets = frame["target_anomaly"].to_numpy(dtype=float)
     dates = pd.to_datetime(frame["date"])
 
     windows: list[np.ndarray] = []
@@ -1063,7 +1188,11 @@ def create_sequence_windows(
         window_targets.append(targets[idx])
         window_dates.append(dates.iloc[idx])
 
-    return np.asarray(windows, dtype=float), np.asarray(window_targets, dtype=float), pd.Series(window_dates, name="date")
+    return (
+        np.asarray(windows, dtype=float),
+        np.asarray(window_targets, dtype=float),
+        pd.Series(window_dates, name="date"),
+    )
 
 
 def split_sequence_windows_by_dates(
@@ -1086,7 +1215,9 @@ def split_sequence_windows_by_dates(
     test_end_ts = pd.Timestamp(test_end).normalize()
 
     train_mask = (date_index >= train_start_ts) & (date_index < validation_start_ts)
-    validation_mask = (date_index >= validation_start_ts) & (date_index <= validation_end_ts)
+    validation_mask = (date_index >= validation_start_ts) & (
+        date_index <= validation_end_ts
+    )
     test_mask = (date_index >= test_start_ts) & (date_index <= test_end_ts)
 
     return {
@@ -1120,7 +1251,9 @@ def calculate_mase(
     insample_array = insample_array[np.isfinite(insample_array)]
 
     effective_seasonality = seasonality if len(insample_array) > seasonality else 1
-    naive_errors = np.abs(insample_array[effective_seasonality:] - insample_array[:-effective_seasonality])
+    naive_errors = np.abs(
+        insample_array[effective_seasonality:] - insample_array[:-effective_seasonality]
+    )
 
     scale = float(np.mean(naive_errors)) if len(naive_errors) > 0 else np.nan
     if np.isnan(scale) or scale == 0:
@@ -1144,7 +1277,9 @@ def seasonal_naive_forecast(
         candidate_dates = [current_date - pd.DateOffset(years=1)]
 
         if current_date.month == 2 and current_date.day == 29:
-            candidate_dates.append(pd.Timestamp(year=current_date.year - 1, month=2, day=28))
+            candidate_dates.append(
+                pd.Timestamp(year=current_date.year - 1, month=2, day=28)
+            )
 
         candidate_dates.extend(
             [
@@ -1174,7 +1309,9 @@ def evaluate_forecast(
 ) -> dict:
     """Считает набор метрик прогноза, включая MASE."""
 
-    base_metrics = evaluate_regression(y_true=y_true, y_pred=y_pred, model_name=model_name)
+    base_metrics = evaluate_regression(
+        y_true=y_true, y_pred=y_pred, model_name=model_name
+    )
     base_metrics["mase"] = calculate_mase(
         y_true=y_true,
         y_pred=y_pred,
@@ -1219,7 +1356,9 @@ def get_default_runtime_config() -> dict:
     }
 
 
-def evaluate_regression(y_true: pd.Series | np.ndarray, y_pred: pd.Series | np.ndarray, model_name: str) -> dict:
+def evaluate_regression(
+    y_true: pd.Series | np.ndarray, y_pred: pd.Series | np.ndarray, model_name: str
+) -> dict:
     """Вычисляет основные метрики регрессии."""
 
     y_true_array = np.asarray(y_true, dtype=float)
@@ -1244,18 +1383,23 @@ def evaluate_regression(y_true: pd.Series | np.ndarray, y_pred: pd.Series | np.n
         "bias": float(np.mean(y_pred_array - y_true_array)),
     }
 
+
 def compute_train_climatic_norm(
     train_frame: pd.DataFrame,
 ) -> pd.DataFrame:
     """Вычисляет климатическую норму только по train-выборке."""
 
-    if "dayofyear" not in train_frame.columns:
-        raise ValueError("В train_frame отсутствует столбец dayofyear.")
+    required_columns = {"dayofyear", "target_tavg"}
+    missing_columns = sorted(required_columns - set(train_frame.columns))
+    if missing_columns:
+        raise ValueError(
+            "В train_frame отсутствуют столбцы, необходимые для расчёта "
+            f"климатической нормы: {missing_columns}."
+        )
 
     climatic_norm = (
-        train_frame.groupby("dayofyear", as_index=False)["target_tavg"]
-        .mean()
-        .rename(columns={"target_tavg": "climatic_norm"})
+        train_frame.groupby("dayofyear", as_index=False)
+        .agg(climatic_norm=("target_tavg", "mean"))
     )
 
     return climatic_norm
@@ -1275,8 +1419,53 @@ def apply_climatic_norm(
         how="left",
     )
 
-    enriched["target_anomaly"] = (
-        enriched["target_tavg"] - enriched["climatic_norm"]
-    )
+    enriched["target_anomaly"] = enriched["target_tavg"] - enriched["climatic_norm"]
 
     return enriched
+
+
+def finalize_modeling_dataset_from_combined(
+    combined: pd.DataFrame,
+) -> pd.DataFrame:
+    """Формирует итоговый массив данных без утечки информации из validation/test."""
+
+    dataset = apply_missing_value_strategy(combined)
+
+    train, validation, test = split_dataset_by_dates(dataset)
+
+    climatic_norm = compute_train_climatic_norm(train)
+
+    train = apply_climatic_norm(train, climatic_norm)
+    validation = apply_climatic_norm(validation, climatic_norm)
+    test = apply_climatic_norm(test, climatic_norm)
+
+    dataset_full = (
+        pd.concat([train, validation, test], ignore_index=True)
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    dataset_full = add_target_history_features(dataset_full)
+
+    history_columns = [
+        "lag_1",
+        "lag_2",
+        "lag_3",
+        "lag_7",
+        "lag_14",
+        "lag_30",
+        "rolling_mean_3",
+        "rolling_mean_7",
+        "rolling_mean_14",
+        "rolling_std_7",
+        "rolling_std_14",
+    ]
+    history_columns = [
+        column for column in history_columns if column in dataset_full.columns
+    ]
+
+    dataset_full = dataset_full.dropna(
+        subset=["target_anomaly", "climatic_norm"] + history_columns
+    ).reset_index(drop=True)
+
+    return dataset_full
